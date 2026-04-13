@@ -1,3 +1,4 @@
+import html
 import os
 from pathlib import Path
 import requests
@@ -7,6 +8,39 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:3001").rstrip("/")
+
+
+def _html_body(text: str) -> str:
+    return html.escape(text or "", quote=False).replace("\n", "<br/>")
+
+
+def render_chat_message(message: dict) -> None:
+    """Render one turn as HTML (no st.chat_message — avoids avatar / layout bugs)."""
+    if message["role"] == "user":
+        body = _html_body(message.get("content", ""))
+        st.markdown(
+            f'''<div style="display:flex;justify-content:flex-end;margin:0.4rem 0;">
+                <div style="background:#E8E8E4;border-radius:18px;padding:0.55rem 1rem;
+                            max-width:72%;font-size:0.9rem;line-height:1.7;color:#1A1A1A;
+                            font-family:Inter,sans-serif;">
+                    {body}
+                </div>
+            </div>''',
+            unsafe_allow_html=True,
+        )
+        return
+
+    body = _html_body(message.get("content", ""))
+    st.markdown(
+        f'''<div style="display:flex;justify-content:flex-start;margin:0.4rem 0;">
+            <div style="background:transparent;padding:0.4rem 0;max-width:100%;
+                        font-size:0.9rem;line-height:1.7;color:#1A1A1A;
+                        font-family:Inter,sans-serif;">
+                {body}
+            </div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
 
 
 def _inject_styles():
@@ -27,11 +61,17 @@ def _inject_styles():
             --text-2:       #3D3D3A;
             --muted:        #8C8C89;
             --accent:       #D97757;
-            --accent-hover: #C4683E;
             --accent-soft:  #FDF0EB;
             --accent-border:#F5D1C3;
-            --radius:       24px;
             --radius-sm:    12px;
+            --sidebar-width: 240px;
+            --gutter:        2rem;
+            --chat-column-outer: calc(800px + 2 * var(--gutter));
+            --surface-hover: #F0F0EE;
+            --surface-subtle: #F5F5F3;
+            --shadow-bottom-float:
+                0 0.25rem 1.25rem hsl(0 0% 0% / 3.5%),
+                0 0 0 0.5px color-mix(in srgb, var(--border) 55%, transparent);
         }
 
         html, body, .stApp {
@@ -43,33 +83,51 @@ def _inject_styles():
         [data-testid="stAppViewContainer"] > .main {
             background: var(--bg) !important;
         }
-        .block-container {
-            max-width: 700px !important;
-            padding: 1.5rem 1rem 6rem !important;
+
+        .block-container,
+        .stMainBlockContainer {
+            max-width: var(--chat-column-outer) !important;
+            width: 100% !important;
+            padding: 1.5rem var(--gutter) 6rem !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
         }
 
-        /* ── Sidebar ── */
+        [data-testid="stSidebar"] .block-container {
+            max-width: 100% !important;
+            padding: 0.75rem 0.6rem !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+        }
+
         [data-testid="stSidebar"] {
             background: var(--sidebar-bg) !important;
             border-right: 1px solid var(--sidebar-border) !important;
-            min-width: 240px !important;
-            max-width: 240px !important;
-            width: 240px !important;
         }
-        [data-testid="stSidebar"] .block-container {
-            padding: 0.75rem 0.6rem !important;
+        [data-testid="stSidebar"][aria-expanded="true"] {
+            min-width: var(--sidebar-width) !important;
+            max-width: var(--sidebar-width) !important;
+            width: var(--sidebar-width) !important;
+        }
+        [data-testid="stSidebarContent"] {
+            padding: 0 !important;
+        }
+        [data-testid="stSidebarHeader"] {
+            margin-bottom: 0 !important;
+            position: absolute !important;
+            z-index: 10 !important;
+            right: 0 !important;
+            height: 50px !important;
         }
         [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
             gap: 0.35rem !important;
         }
 
-        /* ── Typography ── */
         h1, h2, h3 {
             font-family: 'Inter', sans-serif !important;
             color: var(--text) !important;
         }
 
-        /* ── Welcome screen ── */
         .welcome-container {
             display: flex;
             flex-direction: column;
@@ -109,63 +167,9 @@ def _inject_styles():
         }
         .welcome-chip:hover {
             border-color: var(--border-2);
-            background: #F5F5F3;
+            background: var(--surface-subtle);
         }
 
-        /* ── Chat messages (shared) ── */
-        [data-testid="stChatMessage"] {
-            background: transparent !important;
-            border: none !important;
-            border-radius: 0 !important;
-            padding: 0.5rem 0 !important;
-            margin-bottom: 0.25rem !important;
-            box-shadow: none !important;
-            max-width: 700px !important;
-        }
-        [data-testid="stChatMessage"] p {
-            color: var(--text) !important;
-            font-size: 0.9rem !important;
-            line-height: 1.7 !important;
-        }
-        /* Hide all avatars */
-        [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"],
-        [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"],
-        [data-testid="stChatMessage"] .stChatMessageAvatarContainer,
-        [data-testid="stChatMessage"] > div:first-child:has(img),
-        [data-testid="stChatMessage"] > div:first-child:has(svg) {
-            display: none !important;
-        }
-
-        /* ── User message: right-aligned gray pill ── */
-        [data-testid="stChatMessage"][data-testid*="user"],
-        [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-            display: flex !important;
-            justify-content: flex-end !important;
-        }
-        [data-testid="stChatMessage"][data-testid*="user"] > div:last-child,
-        [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) > div:last-child {
-            background: #E8E8E4 !important;
-            border-radius: 18px !important;
-            padding: 0.6rem 1rem !important;
-            max-width: 75% !important;
-            width: fit-content !important;
-            margin-left: auto !important;
-        }
-
-        /* ── Assistant message: left-aligned, no bubble ── */
-        [data-testid="stChatMessage"][data-testid*="assistant"],
-        [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
-            display: flex !important;
-            justify-content: flex-start !important;
-        }
-        [data-testid="stChatMessage"][data-testid*="assistant"] > div:last-child,
-        [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) > div:last-child {
-            background: transparent !important;
-            padding: 0.4rem 0 !important;
-            max-width: 100% !important;
-        }
-
-        /* ── Chat input — single pill, no double border ── */
         [data-testid="stChatInput"] {
             background: var(--surface) !important;
             border: 1px solid var(--border) !important;
@@ -175,7 +179,6 @@ def _inject_styles():
         [data-testid="stChatInput"]:focus-within {
             border-color: var(--border-2) !important;
         }
-        /* Kill inner container borders/bg */
         [data-testid="stChatInput"] > div,
         [data-testid="stChatInput"] > div > div,
         [data-testid="stChatInput"] form,
@@ -199,7 +202,6 @@ def _inject_styles():
             color: var(--muted) !important;
             font-size: 0.85rem !important;
         }
-        /* Send button — dark circle */
         [data-testid="stChatInput"] button,
         [data-testid="stChatInputSubmitButton"] button {
             border-radius: 50% !important;
@@ -221,19 +223,24 @@ def _inject_styles():
             height: 14px !important;
         }
 
-        /* Bottom dock — flush with page bg */
-        [data-testid="stBottom"],
-        [data-testid="stBottom"] > div,
-        [data-testid="stChatFloatingInputContainer"],
-        [data-testid="stChatFloatingInputContainer"] > section,
-        [data-testid="stChatFloatingInputContainer"] > div {
+        [data-testid="stBottom"] {
             background: var(--bg) !important;
-            background-color: var(--bg) !important;
             border-top: none !important;
             box-shadow: none !important;
         }
+        [data-testid="stBottom"] > div {
+            background: transparent !important;
+        }
 
-        /* ── Spinner / processing state ── */
+        [data-testid="stBottomBlockContainer"] {
+            max-width: 864px !important;
+            padding-inline: 2rem !important;
+            margin-inline: auto !important;
+        }
+        [data-testid="stChatInput"] {
+            box-shadow: var(--shadow-bottom-float) !important;
+        }
+
         [data-testid="stSpinner"] {
             padding: 0.5rem 0 !important;
         }
@@ -247,7 +254,6 @@ def _inject_styles():
             font-size: 0.85rem !important;
             font-family: 'Inter', sans-serif !important;
         }
-        /* Style the status/toast messages during processing */
         [data-testid="stStatusWidget"],
         .stAlert {
             background: var(--surface) !important;
@@ -256,7 +262,6 @@ def _inject_styles():
             font-family: 'Inter', sans-serif !important;
         }
 
-        /* ── Sidebar nav buttons (icon + label on one line) ── */
         [data-testid="stSidebar"] .stButton > button {
             background: transparent !important;
             color: var(--text-2) !important;
@@ -274,10 +279,9 @@ def _inject_styles():
             letter-spacing: 0 !important;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
-            background: #F0F0EE !important;
+            background: var(--surface-hover) !important;
             color: var(--text) !important;
         }
-        /* Streamlit nests label in flex — force left alignment */
         [data-testid="stSidebar"] .stButton > button > div {
             display: flex !important;
             justify-content: flex-start !important;
@@ -288,14 +292,13 @@ def _inject_styles():
             text-align: left !important;
             width: 100% !important;
         }
-        /* Recents section — clear of button hover, slightly larger label */
         p.sidebar-recents-heading {
             font-size: 0.875rem !important;
             font-weight: 400 !important;
             color: #6b6b66 !important;
             font-family: Inter, sans-serif !important;
             text-align: left !important;
-            margin: 0.75rem 0 0.15rem 0.15rem !important;
+            margin: 2rem 0 0.15rem 0.15rem !important;
             padding: 0.2rem 0.25rem 0.5rem 0 !important;
             line-height: 1.35 !important;
             position: relative !important;
@@ -307,23 +310,52 @@ def _inject_styles():
             margin: 0;
             padding: 0;
         }
-        /* Remove extra spacing around sidebar dividers */
         [data-testid="stSidebar"] hr {
             margin: 0.4rem 0 !important;
         }
 
-        /* ── Expander (sources) ── */
         [data-testid="stExpander"] {
-            background: var(--surface) !important;
+            background: var(--bg) !important;
             border: 1px solid var(--border) !important;
             border-radius: var(--radius-sm) !important;
             box-shadow: none !important;
             outline: none !important;
+            overflow: hidden !important;
         }
-        [data-testid="stExpander"] summary {
+        [data-testid="stExpander"] details {
+            background: transparent !important;
+            border: 0 !important;
+        }
+        [data-testid="stExpander"] details > summary {
+            background: var(--surface) !important;
+            border-radius: 0 !important;
             color: var(--muted) !important;
             font-size: 0.85rem !important;
         }
+        [data-testid="stExpander"] details[open] > summary {
+            background: var(--surface-hover) !important;
+            border-radius: 0 !important;
+        }
+        [data-testid="stExpander"] details > div {
+            background: var(--surface) !important;
+            padding: 1rem !important;
+        }
+        [data-testid="stExpander"] details:not([open]) > summary:hover {
+            background: var(--surface-hover) !important;
+            border-radius: 0 !important;
+        }
+        [data-testid="stExpander"] [data-testid="stVerticalBlock"] {
+            gap: 0.25rem !important;
+        }
+        [data-testid="stExpander"] [data-testid="stHorizontalBlock"] {
+            padding-top: 0.75rem !important;
+            gap: 0.5rem !important;
+            align-items: flex-start !important;
+        }
+        [data-testid="stExpander"] hr {
+            margin: 0.5rem 0 !important;
+        }
+        [data-testid="stExpander"] details:focus-within,
         [data-testid="stExpander"]:focus,
         [data-testid="stExpander"]:focus-within {
             border-color: var(--border) !important;
@@ -331,7 +363,6 @@ def _inject_styles():
             box-shadow: none !important;
         }
 
-        /* ── Citation tags ── */
         .cite-tag {
             display: inline-block;
             background: var(--accent-soft);
@@ -350,20 +381,14 @@ def _inject_styles():
             color: var(--muted);
         }
 
-        /* ── Misc ── */
         [data-testid="stCaptionContainer"] p,
         .stCaption {
             color: var(--muted) !important;
             font-size: 0.8rem !important;
         }
-        [data-testid="stSpinner"] p {
-            color: var(--muted) !important;
-            font-size: 0.85rem !important;
-        }
 
         hr { border-color: var(--border) !important; }
 
-        /* Hide Streamlit chrome */
         #MainMenu { visibility: hidden; }
         footer { visibility: hidden; }
         header[data-testid="stHeader"] { background: transparent !important; }
@@ -400,7 +425,7 @@ with st.sidebar:
     st.markdown(
         """
         <div style="display:flex;align-items:center;justify-content:flex-start;
-                    padding:0.6rem 0.4rem 0.4rem;margin-bottom:0.25rem;">
+                    padding:0.8rem 0.4rem 0.4rem;margin-bottom:2rem;">
             <span style="font-size:1.15rem;font-weight:600;color:#1A1A1A;
                          font-family:Inter,sans-serif;letter-spacing:-0.01em;">
                 Climate RAG
@@ -428,17 +453,29 @@ with st.sidebar:
     if hist_data:
         for entry in reversed(hist_data[-15:]):
             title = entry.get("title", "Untitled")[:38]
-            if st.button(title, key=f"hist_{entry.get('chat_id','')}",
-                         use_container_width=True):
+            if st.button(
+                title,
+                key=f"hist_{entry.get('chat_id', '')}",
+                use_container_width=True,
+            ):
                 st.session_state.chat_id = entry.get("chat_id")
                 st.session_state.messages = []
                 for msg in entry.get("messages", []):
-                    st.session_state.messages.extend([
-                        {"role": "user",      "content": msg.get("query", "")},
-                        {"role": "assistant", "content": msg.get("answer", ""),
-                         "meta": {"tool_calls":     msg.get("tool_calls", []),
-                                  "num_iterations": msg.get("num_iterations", 0)}},
-                    ])
+                    st.session_state.messages.extend(
+                        [
+                            {"role": "user", "content": msg.get("query", "")},
+                            {
+                                "role": "assistant",
+                                "content": msg.get("answer", ""),
+                                "meta": {
+                                    "tool_calls": msg.get("tool_calls", []),
+                                    "num_iterations": msg.get(
+                                        "num_iterations", 0
+                                    ),
+                                },
+                            },
+                        ]
+                    )
                 last_msg = (entry.get("messages") or [{}])[-1]
                 st.session_state["last_citations"] = last_msg.get("chunks", [])
                 st.session_state["last_confidence"] = last_msg.get("confidence", 0.0)
@@ -452,6 +489,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chat_id" not in st.session_state:
     st.session_state.chat_id = None
+if "is_loading" not in st.session_state:
+    st.session_state.is_loading = False
 
 # Welcome screen (shown when no messages)
 if not st.session_state.messages:
@@ -472,13 +511,9 @@ if not st.session_state.messages:
         unsafe_allow_html=True,
     )
 
-# Render messages
+# Render messages manually (bypasses Streamlit chat_message DOM / avatars)
 for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        meta = message.get("meta")
-        if meta and meta.get("tool_calls"):
-            st.caption(f"used {' · '.join(meta['tool_calls'])}")
+    render_chat_message(message)
 
 # Citations panel
 if st.session_state.get("last_citations"):
@@ -509,60 +544,76 @@ if st.session_state.get("last_citations"):
                 st.divider()
 
 # Chat input
-prompt = st.chat_input("How can I help you today?")
+prompt = st.chat_input(
+    "Ask a question about climate science...",
+    disabled=st.session_state.is_loading,
+)
 
 
 # ── Handle input ──────────────────────────────────────────────
 if prompt:
+    st.session_state.is_loading = True
     st.session_state.messages.append({"role": "user", "content": prompt})
+    render_chat_message(st.session_state.messages[-1])
 
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    placeholder = st.empty()
+    placeholder.markdown(
+        '''<div style="display:flex;justify-content:flex-start;margin:0.4rem 0;">
+            <div style="background:transparent;padding:0.4rem 0;max-width:100%;
+                        font-family:Inter,sans-serif;">
+                <p style="color:#8C8C89;font-size:1rem;letter-spacing:0.15em;
+                          padding:0.4rem 0;">· · ·</p>
+            </div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+    try:
+        payload = {
+            "question": prompt,
+            "top_k": 5,
+            "chat_id": st.session_state.get("chat_id"),
+            "chat_history": st.session_state.messages[:-1],
+        }
+        res = requests.post(
+            f"{BACKEND_URL}/query", json=payload, timeout=60
+        )
+        res.raise_for_status()
+        data = res.json()
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                payload = {
-                    "question":     prompt,
-                    "top_k":        5,
-                    "chat_id":      st.session_state.get("chat_id"),
-                    "chat_history": st.session_state.messages[:-1],
-                }
-                res = requests.post(
-                    f"{BACKEND_URL}/query", json=payload, timeout=60
-                )
-                res.raise_for_status()
-                data = res.json()
+        if "chat_id" in data:
+            st.session_state.chat_id = data["chat_id"]
 
-                if "chat_id" in data:
-                    st.session_state.chat_id = data["chat_id"]
+        answer = data.get("answer", "No answer provided.")
+        citations = data.get("citations", [])
+        confidence = data.get("confidence", 0.0)
+        tool_calls = data.get("tool_calls", [])
+        num_iterations = data.get("num_iterations", 0)
 
-                answer         = data.get("answer", "No answer provided.")
-                citations      = data.get("citations", [])
-                confidence     = data.get("confidence", 0.0)
-                tool_calls     = data.get("tool_calls", [])
-                num_iterations = data.get("num_iterations", 0)
+        assistant_msg = {
+            "role": "assistant",
+            "content": answer,
+            "meta": {
+                "tool_calls": tool_calls,
+                "num_iterations": num_iterations,
+            },
+        }
+        st.session_state.messages.append(assistant_msg)
+        st.session_state["last_citations"] = citations
+        st.session_state["last_confidence"] = confidence
 
-                st.markdown(answer)
+        fetch_history.clear()
 
-                st.session_state.messages.append({
-                    "role":    "assistant",
-                    "content": answer,
-                    "meta":    {
-                        "tool_calls": tool_calls,
-                        "num_iterations": num_iterations,
-                    },
-                })
-                st.session_state["last_citations"] = citations
-                st.session_state["last_confidence"] = confidence
+        placeholder.empty()
+        render_chat_message(assistant_msg)
 
-                fetch_history.clear()
+    except Exception as e:
+        placeholder.empty()
+        err_msg = f"Backend error: {e}"
+        st.error(err_msg)
+        assistant_msg = {"role": "assistant", "content": err_msg}
+        st.session_state.messages.append(assistant_msg)
 
-            except Exception as e:
-                err = f"Backend error: {e}"
-                st.error(err)
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": err}
-                )
+    finally:
+        st.session_state.is_loading = False
 
     st.rerun()
