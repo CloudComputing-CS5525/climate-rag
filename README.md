@@ -17,9 +17,11 @@
 
 ## What It Does
 
-You ask a natural language question like *"What are the effects of ocean
-warming on precipitation patterns?"* The system searches 3,000 climate
-papers using vector similarity and knowledge graph traversal, then
+You ask a natural language question — for example *"What does the Last
+Interglacial tell us about future sea level rise?"* (dozens more grouped
+prompts in [`sample_questions.txt`](sample_questions.txt)). The system searches
+your ingested climate corpus (see table below; size depends on `NUM_PAPERS`
+and filters) using vector similarity and knowledge graph traversal, then
 synthesizes a cited answer using Gemini 2.5 Flash-Lite. Every query is logged
 to Postgres (`app.eval_metrics`); the API exposes `/metrics` and
 `/metrics/history` for analytics or external dashboards.
@@ -34,14 +36,14 @@ flowchart LR
 
     subgraph B[" data/ingestion.py — 6-Stage Pipeline "]
         direction TB
-        B1[1 Load] --> B2[2 Chunk\n~10–25k chunks] --> B3[3 Embed\n768-dim vectors] --> B4[4 KG Extract\nCO_OCCURS edges] --> B5[5 Upload] --> B6[6 Verify\n+ IVFFlat index]
+        B1[1 Load] --> B2[2 Chunk\nthousands of chunks] --> B3[3 Embed\n768-dim vectors] --> B4[4 KG Extract\nCO_OCCURS edges] --> B5[5 Upload] --> B6[6 Verify\n+ IVFFlat index]
     end
 
     B --> C
 
     subgraph C[" PostgreSQL + pgvector (AWS RDS) "]
         direction TB
-        C1[raw.papers\n3,000 papers]
+        C1[raw.papers\npgvector index]
         C2[raw.chunks\nembeddings]
         C3[graph.knowledge_edges\nCO_OCCURS relationships]
         C4[app.eval_metrics\nquery logs]
@@ -143,15 +145,16 @@ BACKEND_URL=http://localhost:3001
 **Size:** Up to 3,000 papers streamed — title + abstract only (no full PDF)  
 **Preprocessing:** LaTeX removed, URLs stripped, whitespace normalized
 
-**Corpus statistics after ingestion** (order-of-magnitude for `NUM_PAPERS=3000`; exact counts depend on chunking and KG extraction):
+**Corpus statistics** (one verified local ingest; re-run `GET /health/db` or Postgres after your own pipeline — counts change with `NUM_PAPERS`, category list, keywords, and whether ingest finished):
 
 | Table | Rows | Description |
 |---|---|---|
-| raw.papers | 3,000 | Climate/environment arXiv papers |
-| raw.chunks | ~10k–25k | Fewer than full-PDF ingest (short title+abstract body) |
-| graph.knowledge_nodes | ~50k–150k | Scientific entities (scispaCy NER) |
-| graph.knowledge_edges | ~800k–2M | CO_OCCURS relationships (weight ≥ 2) |
-| graph.chunk_entity_map | ~500k–1.5M | Chunk-to-entity links |
+| raw.papers | 1,092 | Climate/environment arXiv papers (filtered) |
+| raw.chunks | 2,765 | Text segments (200 words, 30-word overlap) |
+| graph.knowledge_nodes | 18,791 | Scientific entities (scispaCy NER) |
+| graph.knowledge_edges | 1,057,246 | CO_OCCURS relationships (weight ≥ 2) |
+| graph.chunk_entity_map | 136,465 | Chunk-to-entity links |
+| app.eval_metrics | 6 | Logged RAG queries |
 
 ---
 
