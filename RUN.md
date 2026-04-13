@@ -52,22 +52,27 @@ Edit `.env`. Required variables:
 | `DB_USER` | Database user |
 | `DB_PASSWORD` | Database password |
 | `GEMINI_API_KEY` | LLM for RAG query answering |
-| `BACKEND_URL` | FastAPI base URL used by Streamlit (no trailing slash) |
+| `BACKEND_URL` | FastAPI base URL used by Streamlit (no trailing slash); use your ALB URL in AWS |
+| `HF_TOKEN` | Optional — HuggingFace token if you hit rate limits streaming [`ccdv/arxiv-summarization`](https://huggingface.co/datasets/ccdv/arxiv-summarization) |
 
 ---
 
 ## 4. Database schema
 
-Open pgAdmin4, connect to your database, and run `sql/01_create_schema.sql`.
+**Default:** Every `python data/ingestion.py …` run calls `setup_schema()` first and executes `sql/01_create_schema.sql` from the repo (see `data/ingestion.py`). You can still apply the same SQL yourself first if you prefer.
 
-Or run via Python:
+**Manual:** Open pgAdmin4, connect to your database, and run `sql/01_create_schema.sql`.
+
+Or run the file via Python (from repo root):
 
 ```bash
 python3 -c "
+from pathlib import Path
 from scripts.db_connect import get_conn
+sql_path = Path('sql/01_create_schema.sql')
 conn = get_conn()
 cur = conn.cursor()
-with open('sql/01_create_schema.sql') as f:
+with open(sql_path, encoding='utf-8') as f:
     cur.execute(f.read())
 conn.close()
 print('Schema ready.')
@@ -91,7 +96,11 @@ python3 data/ingestion.py --n 2000 --resume
 python3 data/ingestion.py --n 20
 ```
 
-Ingestion is **not** run by `reproduce.sh` — run it manually once before using the app.
+### Vector index
+
+On a full successful pipeline, **Stage 6 (verify)** also runs `sql/02_create_index.sql` when tables look healthy (IVFFlat on chunk embeddings). You can run that file manually in pgAdmin anytime. Search works without it but is slower.
+
+Ingestion is **not** run by `reproduce.sh` — run it manually once before using the app (after Postgres is up).
 
 ---
 
@@ -108,7 +117,7 @@ uvicorn backend.app:app --reload --port 3001
 | `POST /query` | Run RAG query |
 | `GET /history` | Query history |
 | `GET /metrics` | Aggregated performance stats |
-| `GET /metrics/history` | Per-query metrics for dashboard |
+| `GET /metrics/history` | Per-query metrics (for analytics / external tools) |
 | `GET /papers` | List all papers in corpus |
 
 ---
@@ -119,13 +128,14 @@ uvicorn backend.app:app --reload --port 3001
 streamlit run frontend/app.py --server.port 3000
 ```
 
-Open http://localhost:3000. Make sure `BACKEND_URL` in `.env` points at the running API.
+Open http://localhost:3000. Set `BACKEND_URL` in `.env` to the API the browser can reach (e.g. `http://localhost:3001` locally, or your ALB URL with port **3001** for the backend listener).
 
 ---
 
 ## 8. Smoke tests
 
-Requires the backend running first.
+Requires the backend running first. Tests call `BACKEND_URL` from `.env`
+(default `http://localhost:3001`).
 
 ```bash
 pytest tests/smoke_test.py -v

@@ -8,22 +8,10 @@
 
 ## Live Demo
 
-| Service | URL |
+| Endpoint | URL |
 |---|---|
-| **Frontend (Streamlit)** | TBD after AWS deployment |
-| **Backend API** | TBD after AWS deployment |
-| **Health Check** | TBD after AWS deployment |
-
----
-
-## Team
-
-| Name | GitHub |
-|---|---|
-| Rohan Hashmi | @rohanhashmi2 |
-| [Teammate 2] | |
-| [Teammate 3] | |
-| [Teammate 4] | |
+| Frontend URL | [http://climate-rag-alb-1301514485.us-west-2.elb.amazonaws.com](http://climate-rag-alb-1301514485.us-west-2.elb.amazonaws.com) |
+| Backend URL | [http://climate-rag-alb-1301514485.us-west-2.elb.amazonaws.com:3001](http://climate-rag-alb-1301514485.us-west-2.elb.amazonaws.com:3001) |
 
 ---
 
@@ -33,7 +21,8 @@ You ask a natural language question like *"What are the effects of ocean
 warming on precipitation patterns?"* The system searches 2,000 climate
 papers using vector similarity and knowledge graph traversal, then
 synthesizes a cited answer using Gemini 2.5 Flash. Every query is logged
-to Postgres for monitoring via a real-time metrics dashboard.
+to Postgres (`app.eval_metrics`); the API exposes `/metrics` and
+`/metrics/history` for analytics or external dashboards.
 
 ---
 
@@ -45,7 +34,7 @@ flowchart LR
 
     subgraph B[" data/ingestion.py — 6-Stage Pipeline "]
         direction TB
-        B1[1 Load] --> B2[2 Chunk\n~80k chunks] --> B3[3 Embed\n768-dim vectors] --> B4[4 KG Extract\nCO_OCCURS edges] --> B5[5 Upload] --> B6[6 Verify]
+        B1[1 Load] --> B2[2 Chunk\n~80k chunks] --> B3[3 Embed\n768-dim vectors] --> B4[4 KG Extract\nCO_OCCURS edges] --> B5[5 Upload] --> B6[6 Verify\n+ IVFFlat index]
     end
 
     B --> C
@@ -71,8 +60,7 @@ flowchart LR
     D --> E
 
     subgraph E[" Streamlit Frontend — frontend/app.py "]
-        E1[Chat Tab\ncitations + history]
-        E2[Dashboard Tab\nlatency · confidence · tools]
+        E1[Chat + sources\nsidebar history]
     end
 
     D -->|log metrics| C
@@ -92,34 +80,34 @@ flowchart LR
 bash reproduce.sh
 ```
 
-Validates Python 3.12+, creates venv, installs dependencies, tests DB
-connection, starts the FastAPI backend, runs smoke tests, and launches
-the Streamlit frontend.
+Validates Python 3.12+, creates venv, installs dependencies (CPU PyTorch
+first), checks Postgres with `scripts/db_connect.py`, starts the FastAPI
+backend, runs smoke tests against that API, and launches the Streamlit
+frontend.
 
 ### Option B — Manual
 
 ```bash
 # 1. Clone and set up
-git clone <repo-url>
+git clone git@github.com:CloudComputing-CS5525/climate-rag.git
 cd climate-rag
 python3.12 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
 # 2. Configure environment
 cp .env.example .env
 # Fill in your credentials
 
-# 3. Create schema
-# Run sql/01_create_schema.sql in pgAdmin4
-
-# 4. Run ingestion (one-time, ~2 hours)
+# 3. Run ingestion (one-time, ~2 hours)
 python3 data/ingestion.py --n 2000
 
-# 5. Start backend
+# 4. Start backend
 uvicorn backend.app:app --reload --port 3001
 
-# 6. Start frontend
+# 5. Start frontend
 streamlit run frontend/app.py --server.port 3000
 ```
 
@@ -138,8 +126,11 @@ DB_PASSWORD=your_password
 # LLM
 GEMINI_API_KEY=your_gemini_key   # https://aistudio.google.com/app/apikey
 
-# Deployment
-BACKEND_URL=http://localhost:3001  # set to AWS URL after deployment
+# Deployment (Streamlit calls the API here — use your ALB backend URL in AWS)
+BACKEND_URL=http://localhost:3001
+
+# Optional — HuggingFace token for streaming arXiv dataset during ingestion
+# HF_TOKEN=your_hf_token
 ```
 
 ---
@@ -175,7 +166,7 @@ climate-rag/
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
-│   ├── app.py              # Streamlit — chat UI + metrics dashboard
+│   ├── app.py              # Streamlit — chat UI, citations, sidebar history
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── data/
@@ -186,9 +177,10 @@ climate-rag/
 ├── evaluation/
 │   └── evaluate.py         # Metrics logging to app.eval_metrics
 ├── sql/
-│   └── 01_create_schema.sql  # Full schema (raw, graph, app + pgvector)
+│   ├── 01_create_schema.sql  # Full schema (raw, graph, app + pgvector)
+│   └── 02_create_index.sql   # pgvector IVFFlat index (optional speedup)
 ├── tests/
-│   └── smoke_test.py       # Pytest smoke tests (no DB required)
+│   └── smoke_test.py       # Pytest smoke tests (needs running backend)
 ├── .github/
 │   └── workflows/
 │       ├── deploy-backend.yml   # CI/CD → AWS ECS
@@ -212,7 +204,7 @@ climate-rag/
 | `/query` | POST | Run RAG query — returns answer + citations |
 | `/history` | GET | Retrieve chat history |
 | `/metrics` | GET | Aggregated performance stats |
-| `/metrics/history` | GET | Per-query metrics for dashboard charts |
+| `/metrics/history` | GET | Per-query metrics (for charts / analytics) |
 | `/papers` | GET | List all papers in corpus |
 
 ---
@@ -223,7 +215,7 @@ climate-rag/
 - **Checkpointing:** Ingestion saves Parquet checkpoints after each stage — use `--resume` to skip completed stages
 - **Determinism:** Random seeds fixed (`random.seed(100)`, `np.random.seed(100)`)
 - **Pinned deps:** `artifacts/requirements_frozen.txt` contains pinned packages from a working environment
-- **Smoke tests:** `pytest tests/smoke_test.py` validates the backend without requiring a live DB
+- **Smoke tests:** `pytest tests/smoke_test.py` hits a **running** backend (`BACKEND_URL`); it does not run SQL or ingestion
 
 ---
 
