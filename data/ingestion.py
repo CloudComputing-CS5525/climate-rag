@@ -2,7 +2,7 @@
 Ingestion pipeline for the Climate RAG system.
 
 Stages:
-    1. load_and_clean_dataset()   - Load climate papers from HuggingFace
+    1. load_and_clean_dataset()   - Stream ShayManor/Labeled-arXiv (category + keyword)
     2. chunk_documents()          - Split papers into text chunks
     3. generate_embeddings()      - Embed chunks with all-mpnet-base-v2
     4. extract_knowledge_graph()  - Extract KG nodes/edges via scispaCy
@@ -47,7 +47,8 @@ from data.config import (
     CHUNK_OVERLAP_WORDS,
     CHUNK_SIZE_WORDS,
     CHUNKS_CHECKPOINT,
-    CLIMATE_KEYWORDS,
+    CLIMATE_ARXIV_CATEGORY_MARKERS,
+    CLIMATE_KEYWORDS_REQUIRED,
     EDGES_CHECKPOINT,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_DIM,
@@ -59,6 +60,7 @@ from data.config import (
     NUM_PAPERS,
     PAPERS_CHECKPOINT,
     SPACY_MODEL,
+    INGEST_SOURCE_TAG,
 )
 from scripts.db_connect import get_conn
 
@@ -102,75 +104,151 @@ def _clean_text(text: str) -> str:
     return text
 
 
-def _is_climate_paper(abstract: str, article: str) -> bool:
-    """Return True if the paper is climate/environment related."""
-    combined = (abstract + " " + article[:500]).lower()
-    return any(kw in combined for kw in CLIMATE_KEYWORDS)
+def _normalize_arxiv_id(raw: str) -> str | None:
+    if not raw:
+        return None
+    s = str(raw).strip().lower()
+    if s.startswith("arxiv:"):
+        s = s[6:].strip()
+    s = re.sub(r"v\d+$", "", s, flags=re.I)
+    return s or None
+
+
+def _paper_id_from_arxiv_id(aid: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", aid)
+    return f"arxiv_{safe}"
+
+
+def _arxiv_categories_allow(categories: str) -> bool:
+    if not categories or not isinstance(categories, str):
+        return False
+    c = categories.lower()
+    return any(m.lower() in c for m in CLIMATE_ARXIV_CATEGORY_MARKERS)
+
+
+def _year_from_labeled_item(item: dict) -> int | None:
+    u = item.get("update_date")
+    if u is None:
+        return None
+    if hasattr(u, "year"):
+        return int(u.year)
+    s = str(u)
+    if len(s) >= 4 and s[:4].isdigit():
+        return int(s[:4])
+    return None
+
+
+def _is_climate_paper(abstract: str) -> bool:
+    abstract_lower = abstract.lower()
+    return any(
+        re.search(r"\b" + re.escape(kw.lower()) + r"\b", abstract_lower)
+        for kw in CLIMATE_KEYWORDS_REQUIRED
+    )
 
 
 def load_and_clean_dataset(n: int = NUM_PAPERS, resume: bool = False) -> pd.DataFrame:
     if resume and PAPERS_CHECKPOINT.exists():
-        print(f"[Stage 1] Resuming from checkpoint: {PAPERS_CHECKPOINT}")
-        df = pd.read_parquet(PAPERS_CHECKPOINT)
-        print(f"[Stage 1] Loaded {len(df)} papers from checkpoint.")
-        return df
+        prev = pd.read_parquet(PAPERS_CHECKPOINT)
+        if "ingest_source" in prev.columns and prev["ingest_source"].eq(INGEST_SOURCE_TAG).all():
+            print(f"[Stage 1] Resuming from checkpoint: {PAPERS_CHECKPOINT}")
+            print(f"[Stage 1] Loaded {len(prev)} papers from checkpoint.")
+            return prev
+        print(
+            "[Stage 1] Checkpoint is from an older ingest; ignoring --resume for Stage 1 "
+            f"(expected ingest_source={INGEST_SOURCE_TAG!r})."
+        )
 
-    print(f"[Stage 1] Loading {n} climate papers from HuggingFace (ccdv/arxiv-summarization)...")
-    print(f"[Stage 1] Filtering by keywords: {CLIMATE_KEYWORDS}")
+    print(
+        f"[Stage 1] Loading up to {n} climate papers from HuggingFace "
+        "(ShayManor/Labeled-arXiv, papers)..."
+    )
+    print(
+        "[Stage 1] Filter: arXiv categories, then >=1 keyword in abstract (word boundaries) "
+        f"({len(CLIMATE_ARXIV_CATEGORY_MARKERS)} category markers, "
+        f"{len(CLIMATE_KEYWORDS_REQUIRED)} keywords)."
+    )
+    print(
+        "[Stage 1] Note: full PDFs are not in this dataset; chunking uses title+abstract."
+    )
 
     dataset = load_dataset(
-        "ccdv/arxiv-summarization",
+        "ShayManor/Labeled-arXiv",
+        "papers",
         split="train",
         streaming=True,
         token=os.getenv("HF_TOKEN") or None,
     )
 
     records = []
-    skipped_quality = 0
-    skipped_domain  = 0
-    scanned         = 0
+    skipped_deleted   = 0
+    skipped_category  = 0
+    skipped_domain    = 0
+    skipped_quality   = 0
+    scanned           = 0
 
-    for item in tqdm(dataset, desc="Scanning papers"):
+    for item in tqdm(dataset, desc="Scanning arXiv metadata"):
         if len(records) >= n:
             break
 
         scanned += 1
 
-        abstract = _clean_text(item.get("abstract", ""))
-        article  = _clean_text(item.get("article", ""))
+        if item.get("deleted"):
+            skipped_deleted += 1
+            continue
 
-        # Quality filter
+        categories = item.get("categories") or ""
+        if not _arxiv_categories_allow(categories):
+            skipped_category += 1
+            continue
+
+        raw_id = item.get("id", "")
+        aid = _normalize_arxiv_id(str(raw_id))
+        if not aid:
+            skipped_quality += 1
+            continue
+
+        title = _clean_text(item.get("title", "") or "")
+        abstract = _clean_text(item.get("abstract", "") or "")
+        authors = (item.get("authors") or "").strip() if isinstance(item.get("authors"), str) else ""
+
+        body = _clean_text(f"{title}\n\n{abstract}" if title else abstract)
+
         if not abstract or len(abstract.split()) < 20:
             skipped_quality += 1
             continue
-        if not article or len(article.split()) < 50:
+        if len(body.split()) < 40:
             skipped_quality += 1
             continue
 
-        # Climate domain filter
-        if not _is_climate_paper(abstract, article):
+        if not _is_climate_paper(abstract):
             skipped_domain += 1
             continue
 
-        paper_id = f"arxiv_{scanned:06d}"
+        paper_id = _paper_id_from_arxiv_id(aid)
+        year = _year_from_labeled_item(item)
 
         records.append({
             "paper_id":         paper_id,
-            "title":            f"arXiv Paper {paper_id}",
-            "authors":          "",
+            "title":            title or f"arXiv {aid}",
+            "authors":          authors,
             "abstract":         abstract,
-            "publication_year": None,
+            "publication_year": year,
             "source":           "arxiv",
-            "source_url":       "",
-            "categories":       "climate",
+            "source_url":       f"https://arxiv.org/abs/{aid}",
+            "categories":       categories.strip(),
             "section_names":    ["abstract", "body"],
-            "sections":         [abstract, article],
+            "sections":         [abstract, body],
+            "ingest_source":    INGEST_SOURCE_TAG,
         })
 
     df = pd.DataFrame(records)
-    print(f"\n[Stage 1] Scanned {scanned} papers total.")
+    print(f"\n[Stage 1] Scanned {scanned} metadata rows.")
     print(f"[Stage 1] Kept {len(df)} climate papers.")
-    print(f"[Stage 1] Skipped {skipped_domain} (wrong domain), {skipped_quality} (too short).")
+    print(
+        "[Stage 1] Skipped "
+        f"{skipped_deleted} (deleted), {skipped_category} (wrong arXiv category), "
+        f"{skipped_domain} (keyword filter), {skipped_quality} (too short / bad id)."
+    )
     df.to_parquet(PAPERS_CHECKPOINT, index=False)
     print(f"[Stage 1] Checkpoint saved → {PAPERS_CHECKPOINT}")
     return df
@@ -182,10 +260,19 @@ def load_and_clean_dataset(n: int = NUM_PAPERS, resume: bool = False) -> pd.Data
 
 def chunk_documents(papers_df: pd.DataFrame, resume: bool = False) -> pd.DataFrame:
     if resume and CHUNKS_CHECKPOINT.exists():
-        print(f"[Stage 2] Resuming from checkpoint: {CHUNKS_CHECKPOINT}")
-        df = pd.read_parquet(CHUNKS_CHECKPOINT)
-        print(f"[Stage 2] Loaded {len(df)} chunks from checkpoint.")
-        return df
+        papers_newer = (
+            PAPERS_CHECKPOINT.exists()
+            and PAPERS_CHECKPOINT.stat().st_mtime > CHUNKS_CHECKPOINT.stat().st_mtime
+        )
+        if not papers_newer:
+            print(f"[Stage 2] Resuming from checkpoint: {CHUNKS_CHECKPOINT}")
+            df = pd.read_parquet(CHUNKS_CHECKPOINT)
+            print(f"[Stage 2] Loaded {len(df)} chunks from checkpoint.")
+            return df
+        print(
+            "[Stage 2] papers.parquet is newer than chunks checkpoint; "
+            "re-chunking instead of --resume."
+        )
 
     print(f"[Stage 2] Chunking {len(papers_df)} papers...")
 
@@ -283,11 +370,20 @@ def generate_embeddings(chunks_df: pd.DataFrame, resume: bool = False) -> pd.Dat
 
 def extract_knowledge_graph(chunks_df: pd.DataFrame, resume: bool = False):
     if resume and NODES_CHECKPOINT.exists() and EDGES_CHECKPOINT.exists() and MAP_CHECKPOINT.exists():
-        print(f"[Stage 4] Resuming from checkpoints.")
-        return (
-            pd.read_parquet(NODES_CHECKPOINT),
-            pd.read_parquet(EDGES_CHECKPOINT),
-            pd.read_parquet(MAP_CHECKPOINT),
+        chunks_newer = (
+            CHUNKS_CHECKPOINT.exists()
+            and CHUNKS_CHECKPOINT.stat().st_mtime > NODES_CHECKPOINT.stat().st_mtime
+        )
+        if not chunks_newer:
+            print(f"[Stage 4] Resuming from checkpoints.")
+            return (
+                pd.read_parquet(NODES_CHECKPOINT),
+                pd.read_parquet(EDGES_CHECKPOINT),
+                pd.read_parquet(MAP_CHECKPOINT),
+            )
+        print(
+            "[Stage 4] chunks.parquet newer than KG checkpoints; "
+            "re-extracting instead of --resume."
         )
 
     print(f"[Stage 4] Extracting knowledge graph from {len(chunks_df)} chunks...")
@@ -414,8 +510,14 @@ def upload_to_postgres(papers_df, chunks_df, nodes_df, edges_df, map_df):
     print(f"[Stage 5] Uploading {len(papers_df)} rows → raw.papers...")
     papers_data = [
         (
-            row["paper_id"], row["title"], row["authors"], row["abstract"],
-            None, row["source"], row["source_url"], row["categories"]
+            row["paper_id"],
+            row["title"],
+            row["authors"],
+            row["abstract"],
+            row.get("publication_year"),
+            row["source"],
+            row["source_url"],
+            row["categories"],
         )
         for _, row in papers_df.iterrows()
     ]
@@ -486,8 +588,8 @@ def upload_to_postgres(papers_df, chunks_df, nodes_df, edges_df, map_df):
     conn.commit()
     print("[Stage 5] graph.knowledge_nodes done.")
 
-    # ── 4. graph.knowledge_edges — COPY via temp file ─────────
-    print(f"[Stage 5] Uploading {len(edges_df)} rows → graph.knowledge_edges (COPY)...")
+    # ── 4. graph.knowledge_edges ─────────
+    print(f"[Stage 5] Uploading {len(edges_df)} rows → graph.knowledge_edges...")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".tsv", delete=False, dir="/tmp") as f:
         tmp_edges_path = f.name
         edges_df[["edge_id", "source_node_id", "target_node_id",
@@ -508,8 +610,8 @@ def upload_to_postgres(papers_df, chunks_df, nodes_df, edges_df, map_df):
     conn.commit()
     print("[Stage 5] graph.knowledge_edges done.")
 
-    # ── 5. graph.chunk_entity_map — COPY via temp file ────────
-    print(f"[Stage 5] Uploading {len(map_df)} rows → graph.chunk_entity_map (COPY)...")
+    # ── 5. graph.chunk_entity_map ────────
+    print(f"[Stage 5] Uploading {len(map_df)} rows → graph.chunk_entity_map...")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".tsv", delete=False, dir="/tmp") as f:
         tmp_map_path = f.name
         map_df[["map_id", "chunk_id", "node_id", "confidence"]].to_csv(

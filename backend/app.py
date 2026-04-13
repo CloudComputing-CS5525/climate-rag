@@ -14,12 +14,11 @@ from backend.logger import logger, query_id_var, latency_var
 
 load_dotenv()
 
-MODEL_ID = "gemini-2.5-flash"
+MODEL_ID = "gemini-2.5-flash-lite"
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = FastAPI(title="Climate RAG API")
 
-# ── Connection caching ────────────────────────────────────────
 _GLOBAL_CONN = None
 
 def get_active_conn():
@@ -30,15 +29,13 @@ def get_active_conn():
     return _GLOBAL_CONN
 
 
-# ── Models ────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     question: str
-    top_k: int = 5
+    top_k: int = 10
     chat_id: Optional[str] = None
     chat_history: List[Dict[str, Any]] = []
 
 
-# ── Logging helpers ───────────────────────────────────────────
 def save_to_csv_log(question: str, result: dict):
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -108,7 +105,6 @@ def save_to_history(query_text: str, answer: str, citations: list,
         json.dump(history_data, f, indent=4, ensure_ascii=False)
 
 
-# ── Core query logic ──────────────────────────────────────────
 def _query_logic(req: QueryRequest):
     start          = time.time()
     conn           = get_active_conn()
@@ -118,7 +114,6 @@ def _query_logic(req: QueryRequest):
     query_id_var.set(log_id)
     latency_var.set("N/A")
 
-    # ── Step 1: vector search ─────────────────────────────────
     logger.info(f"Running vector search for: '{req.question}'")
     chunks = get_top_chunks(conn, req.question, top_k=req.top_k)
 
@@ -140,21 +135,18 @@ def _query_logic(req: QueryRequest):
             "score":    score,
         })
 
-    # ── Step 2: knowledge graph search ───────────────────────
     logger.info("Running knowledge graph search...")
     graph_data = graph_search(conn, req.question)
     kg_context = ""
     if graph_data:
         kg_lines   = [
             f"{r['source']} -[{r['relation']}]-> {r['target']} (weight: {r['weight']})"
-            for r in graph_data[:20]  # cap at 20 to avoid bloating context
+            for r in graph_data[:20]
         ]
         kg_context = "\nKnowledge Graph Relationships:\n" + "\n".join(kg_lines)
 
-    # ── Step 3: single Gemini call ────────────────────────────
     context = "\n\n".join(context_parts) + kg_context
 
-    # Build prompt with optional chat history
     if req.chat_history:
         history_text = "Prior conversation:\n"
         for msg in req.chat_history:
@@ -173,18 +165,31 @@ def _query_logic(req: QueryRequest):
     )
 
     logger.info("Calling Gemini...")
-    response = gemini_client.models.generate_content(
-        model=MODEL_ID,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            max_output_tokens=800,
-        )
-    )
+    response = None
+    for attempt in range(3):
+        try:
+            response = gemini_client.models.generate_content(
+                model=MODEL_ID,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=1200,
+                ),
+            )
+            break
+        except Exception as e:
+            if attempt < 2:
+                logger.warning(
+                    "Gemini generate_content failed (%s/3): %s; retrying in 5s...",
+                    attempt + 1,
+                    e,
+                )
+                time.sleep(5)
+                continue
+            raise
     answer = response.text
     logger.info("Gemini responded.")
 
-    # ── Step 4: log and return ────────────────────────────────
     final_latency = int((time.time() - start) * 1000)
     latency_var.set(f"{final_latency}ms")
 
@@ -231,7 +236,6 @@ def _query_logic(req: QueryRequest):
     return result
 
 
-# ── Endpoints ─────────────────────────────────────────────────
 @app.get("/")
 def read_root():
     return {"message": "Climate RAG API is running"}

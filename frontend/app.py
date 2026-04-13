@@ -14,8 +14,36 @@ def _html_body(text: str) -> str:
     return html.escape(text or "", quote=False).replace("\n", "<br/>")
 
 
+def render_message_sources(citations: list, confidence: float) -> None:
+    if not citations:
+        return
+    with st.expander(
+        f"Sources ({len(citations)}) · confidence {float(confidence):.3f}",
+        expanded=False,
+    ):
+        for i, chunk in enumerate(citations, start=1):
+            col_a, col_b = st.columns([1, 8])
+            with col_a:
+                st.markdown(
+                    f'<span class="cite-tag">[{i}]</span>',
+                    unsafe_allow_html=True,
+                )
+            with col_b:
+                st.markdown(
+                    f"**{chunk.get('title', 'Unknown')}** · "
+                    f"*{chunk.get('section', '')}*"
+                )
+                st.markdown(
+                    f'<span class="score-badge">'
+                    f"score {round(chunk.get('score', 0), 3)}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(chunk.get("text", ""))
+            if i < len(citations):
+                st.divider()
+
+
 def render_chat_message(message: dict) -> None:
-    """Render one turn as HTML (no st.chat_message — avoids avatar / layout bugs)."""
     if message["role"] == "user":
         body = _html_body(message.get("content", ""))
         st.markdown(
@@ -41,10 +69,12 @@ def render_chat_message(message: dict) -> None:
         </div>''',
         unsafe_allow_html=True,
     )
+    cites = message.get("citations") or []
+    if cites:
+        render_message_sources(cites, float(message.get("confidence") or 0.0))
 
 
 def _inject_styles():
-    """Claude.ai-matched styling."""
     st.markdown(
         """
         <style>
@@ -398,7 +428,6 @@ def _inject_styles():
     )
 
 
-# ── Cached fetchers ───────────────────────────────────────────
 @st.cache_data(ttl=30)
 def fetch_history():
     try:
@@ -409,7 +438,6 @@ def fetch_history():
         return []
 
 
-# ── Page setup ────────────────────────────────────────────────
 st.set_page_config(
     page_title="Climate Research Assistant",
     page_icon="🌎",
@@ -419,9 +447,7 @@ st.set_page_config(
 _inject_styles()
 
 
-# ── Sidebar ───────────────────────────────────────────────────
 with st.sidebar:
-    # ── App title ──
     st.markdown(
         """
         <div style="display:flex;align-items:center;justify-content:flex-start;
@@ -437,12 +463,10 @@ with st.sidebar:
 
     if st.button("+ New chat", key="nav_new_chat", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.pop("last_citations", None)
-        st.session_state.pop("last_confidence", None)
+        st.session_state.pending_question = None
         st.session_state.chat_id = None
         st.rerun()
 
-    # ── Recents ──
     st.markdown(
         '<p class="sidebar-recents-heading">Recents</p>'
         '<div class="sidebar-recents-spacer" aria-hidden="true"></div>',
@@ -473,26 +497,24 @@ with st.sidebar:
                                         "num_iterations", 0
                                     ),
                                 },
+                                "citations": msg.get("chunks") or [],
+                                "confidence": float(msg.get("confidence") or 0.0),
                             },
                         ]
                     )
-                last_msg = (entry.get("messages") or [{}])[-1]
-                st.session_state["last_citations"] = last_msg.get("chunks", [])
-                st.session_state["last_confidence"] = last_msg.get("confidence", 0.0)
+                st.session_state.pending_question = None
                 st.rerun()
     else:
         st.caption("No conversations yet.")
 
 
-# ── Main area ─────────────────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chat_id" not in st.session_state:
     st.session_state.chat_id = None
-if "is_loading" not in st.session_state:
-    st.session_state.is_loading = False
+if "pending_question" not in st.session_state:
+    st.session_state.pending_question = None
 
-# Welcome screen (shown when no messages)
 if not st.session_state.messages:
     st.markdown(
         """
@@ -501,111 +523,75 @@ if not st.session_state.messages:
                 <span class="welcome-icon">&#10044;</span>Climate Research Assistant
             </div>
             <div class="welcome-chips">
-                <span class="welcome-chip">How do ocean temperatures affect CO₂ absorption?</span>
-                <span class="welcome-chip">What causes Arctic ice loss?</span>
-                <span class="welcome-chip">How do aerosols influence climate forcing?</span>
-                <span class="welcome-chip">What is the carbon cycle in tropical forests?</span>
-                <span class="welcome-chip">How does deforestation affect albedo?</span>
-                <span class="welcome-chip">What are greenhouse gas feedback mechanisms?</span>
-                <span class="welcome-chip">How does ocean acidification affect marine life?</span>
-                <span class="welcome-chip">What drives sea level rise?</span>
+                <span class="welcome-chip">How does the Gulf Stream affect European climate?</span>
+                <span class="welcome-chip">What does the Last Interglacial tell us about sea level rise?</span>
+                <span class="welcome-chip">How does solar variability influence global temperature?</span>
+                <span class="welcome-chip">What is the relationship between CO2 and global warming?</span>
+                <span class="welcome-chip">How do tropical cyclones respond to climate change?</span>
+                <span class="welcome-chip">What causes thermohaline circulation to weaken?</span>
+                <span class="welcome-chip">How do aerosols affect Earth's radiation budget?</span>
+                <span class="welcome-chip">What are Dansgaard-Oeschger climate events?</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-# Render messages manually (bypasses Streamlit chat_message DOM / avatars)
 for message in st.session_state.messages:
     render_chat_message(message)
 
-# Citations panel
-if st.session_state.get("last_citations"):
-    with st.expander(
-        f"Sources ({len(st.session_state['last_citations'])}) "
-        f"· confidence {float(st.session_state.get('last_confidence', 0)):.3f}",
-        expanded=False,
-    ):
-        for i, chunk in enumerate(st.session_state["last_citations"], start=1):
-            col_a, col_b = st.columns([1, 8])
-            with col_a:
-                st.markdown(
-                    f'<span class="cite-tag">[{i}]</span>',
-                    unsafe_allow_html=True,
-                )
-            with col_b:
-                st.markdown(
-                    f"**{chunk.get('title', 'Unknown')}** · "
-                    f"*{chunk.get('section', '')}*"
-                )
-                st.markdown(
-                    f'<span class="score-badge">'
-                    f"score {round(chunk.get('score', 0), 3)}</span>",
-                    unsafe_allow_html=True,
-                )
-                st.caption(chunk.get("text", ""))
-            if i < len(st.session_state["last_citations"]):
-                st.divider()
-
-# Chat input
+pending = st.session_state.pending_question
 prompt = st.chat_input(
     "Ask a question about climate science...",
-    disabled=st.session_state.is_loading,
+    disabled=bool(pending),
 )
 
-
-# ── Handle input ──────────────────────────────────────────────
-if prompt:
-    st.session_state.is_loading = True
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    render_chat_message(st.session_state.messages[-1])
-
-    try:
-        payload = {
-            "question": prompt,
-            "top_k": 5,
-            "chat_id": st.session_state.get("chat_id"),
-            "chat_history": st.session_state.messages[:-1],
-        }
-        with st.spinner("Searching papers and drafting your answer ..."):
+if pending:
+    with st.spinner("Searching papers and drafting your answer ..."):
+        try:
+            payload = {
+                "question": pending,
+                "top_k": 10,
+                "chat_id": st.session_state.get("chat_id"),
+                "chat_history": st.session_state.messages[:-1],
+            }
             res = requests.post(
                 f"{BACKEND_URL}/query", json=payload, timeout=60
             )
             res.raise_for_status()
             data = res.json()
 
-        if "chat_id" in data:
-            st.session_state.chat_id = data["chat_id"]
+            if "chat_id" in data:
+                st.session_state.chat_id = data["chat_id"]
 
-        answer = data.get("answer", "No answer provided.")
-        citations = data.get("citations", [])
-        confidence = data.get("confidence", 0.0)
-        tool_calls = data.get("tool_calls", [])
-        num_iterations = data.get("num_iterations", 0)
+            answer = data.get("answer", "No answer provided.")
+            citations = data.get("citations", [])
+            confidence = data.get("confidence", 0.0)
+            tool_calls = data.get("tool_calls", [])
+            num_iterations = data.get("num_iterations", 0)
 
-        assistant_msg = {
-            "role": "assistant",
-            "content": answer,
-            "meta": {
-                "tool_calls": tool_calls,
-                "num_iterations": num_iterations,
-            },
-        }
-        st.session_state.messages.append(assistant_msg)
-        st.session_state["last_citations"] = citations
-        st.session_state["last_confidence"] = confidence
+            assistant_msg = {
+                "role": "assistant",
+                "content": answer,
+                "meta": {
+                    "tool_calls": tool_calls,
+                    "num_iterations": num_iterations,
+                },
+                "citations": citations,
+                "confidence": confidence,
+            }
+            st.session_state.messages.append(assistant_msg)
+            fetch_history.clear()
+        except Exception as e:
+            err_msg = f"Backend error: {e}"
+            st.error(err_msg)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": err_msg}
+            )
+    st.session_state.pending_question = None
+    st.rerun()
 
-        fetch_history.clear()
-
-        render_chat_message(assistant_msg)
-
-    except Exception as e:
-        err_msg = f"Backend error: {e}"
-        st.error(err_msg)
-        assistant_msg = {"role": "assistant", "content": err_msg}
-        st.session_state.messages.append(assistant_msg)
-
-    finally:
-        st.session_state.is_loading = False
-
+elif prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.pending_question = prompt
     st.rerun()

@@ -2,7 +2,7 @@
 
 > A cloud-native RAG system that answers natural language questions about
 > climate and environmental science papers using pgvector similarity search,
-> knowledge graph traversal, and Gemini 2.5 Flash — deployed on AWS.
+> knowledge graph traversal, and Gemini 2.5 Flash-Lite — deployed on AWS.
 
 ---
 
@@ -18,9 +18,9 @@
 ## What It Does
 
 You ask a natural language question like *"What are the effects of ocean
-warming on precipitation patterns?"* The system searches 2,000 climate
+warming on precipitation patterns?"* The system searches 3,000 climate
 papers using vector similarity and knowledge graph traversal, then
-synthesizes a cited answer using Gemini 2.5 Flash. Every query is logged
+synthesizes a cited answer using Gemini 2.5 Flash-Lite. Every query is logged
 to Postgres (`app.eval_metrics`); the API exposes `/metrics` and
 `/metrics/history` for analytics or external dashboards.
 
@@ -30,19 +30,19 @@ to Postgres (`app.eval_metrics`); the API exposes `/metrics` and
 
 ```mermaid
 flowchart LR
-    A([HuggingFace Dataset\nccdv/arxiv-summarization\nclimate filter]) --> B
+    A([HuggingFace\nShayManor/Labeled-arXiv\ncategory + keyword filter]) --> B
 
     subgraph B[" data/ingestion.py — 6-Stage Pipeline "]
         direction TB
-        B1[1 Load] --> B2[2 Chunk\n~80k chunks] --> B3[3 Embed\n768-dim vectors] --> B4[4 KG Extract\nCO_OCCURS edges] --> B5[5 Upload] --> B6[6 Verify\n+ IVFFlat index]
+        B1[1 Load] --> B2[2 Chunk\n~10–25k chunks] --> B3[3 Embed\n768-dim vectors] --> B4[4 KG Extract\nCO_OCCURS edges] --> B5[5 Upload] --> B6[6 Verify\n+ IVFFlat index]
     end
 
     B --> C
 
     subgraph C[" PostgreSQL + pgvector (AWS RDS) "]
         direction TB
-        C1[raw.papers\n2,000 papers]
-        C2[raw.chunks\n~80k chunks + embeddings]
+        C1[raw.papers\n3,000 papers]
+        C2[raw.chunks\nembeddings]
         C3[graph.knowledge_edges\nCO_OCCURS relationships]
         C4[app.eval_metrics\nquery logs]
     end
@@ -53,7 +53,7 @@ flowchart LR
         direction TB
         D1[1 pgvector cosine search]
         D2[2 KG entity lookup]
-        D3[3 Gemini 2.5 Flash\nsingle cited answer]
+        D3[3 Gemini 2.5 Flash-Lite\nsingle cited answer]
         D1 --> D2 --> D3
     end
 
@@ -101,8 +101,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Fill in your credentials
 
-# 3. Run ingestion (one-time, ~2 hours)
-python3 data/ingestion.py --n 2000
+# 3. Run ingestion (one-time; duration depends on filters and HF rate limits)
+python3 data/ingestion.py --n 3000
 
 # 4. Start backend
 uvicorn backend.app:app --reload --port 3001
@@ -137,21 +137,21 @@ BACKEND_URL=http://localhost:3001
 
 ## Dataset
 
-**Source:** [`ccdv/arxiv-summarization`](https://huggingface.co/datasets/ccdv/arxiv-summarization) on HuggingFace  
-**Domain:** Climate and environmental science arXiv papers  
-**Filter:** Keyword match on abstract (climate, environment, carbon, emission, atmospheric, ocean, renewable, fossil fuel, greenhouse, temperature, precipitation, drought)  
-**Size:** 2,000 papers streamed — no full dataset download required  
+**Source:** [`ShayManor/Labeled-arXiv`](https://huggingface.co/datasets/ShayManor/Labeled-arXiv) (`papers` subset) on HuggingFace  
+**Domain:** arXiv categories (`CLIMATE_ARXIV_CATEGORY_MARKERS`) plus abstract keywords (`CLIMATE_KEYWORDS_REQUIRED`, word-boundary match)  
+**Filter:** Non-deleted rows, category allow-list, quality gates, then ≥1 keyword in abstract  
+**Size:** Up to 3,000 papers streamed — title + abstract only (no full PDF)  
 **Preprocessing:** LaTeX removed, URLs stripped, whitespace normalized
 
-**Corpus statistics after ingestion:**
+**Corpus statistics after ingestion** (order-of-magnitude for `NUM_PAPERS=3000`; exact counts depend on chunking and KG extraction):
 
 | Table | Rows | Description |
 |---|---|---|
-| raw.papers | 2,000 | Climate/environment arXiv papers |
-| raw.chunks | 71,661 | Text segments (200 words, 30-word overlap) |
-| graph.knowledge_nodes | 320,904 | Scientific entities (scispaCy NER) |
-| graph.knowledge_edges | 5,459,043 | CO_OCCURS relationships (weight ≥ 2) |
-| graph.chunk_entity_map | 3,317,667 | Chunk-to-entity links |
+| raw.papers | 3,000 | Climate/environment arXiv papers |
+| raw.chunks | ~10k–25k | Fewer than full-PDF ingest (short title+abstract body) |
+| graph.knowledge_nodes | ~50k–150k | Scientific entities (scispaCy NER) |
+| graph.knowledge_edges | ~800k–2M | CO_OCCURS relationships (weight ≥ 2) |
+| graph.chunk_entity_map | ~500k–1.5M | Chunk-to-entity links |
 
 ---
 
@@ -226,7 +226,7 @@ climate-rag/
 | Database | PostgreSQL 17 + pgvector (AWS RDS) |
 | Embeddings | sentence-transformers/all-mpnet-base-v2 (768-dim) |
 | NLP / KG | scispaCy en_core_sci_sm |
-| LLM | Gemini 2.5 Flash (Google GenAI) |
+| LLM | Gemini 2.5 Flash-Lite (Google GenAI) |
 | Backend | FastAPI + uvicorn |
 | Frontend | Streamlit |
 | Deployment | AWS ECS Fargate (Docker) |

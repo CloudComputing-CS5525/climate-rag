@@ -26,7 +26,7 @@ def extract_query_entities(query: str) -> List[str]:
     return list(set(entities))
 
 
-def get_top_chunks(conn, query_text: str, top_k: int = 5):
+def get_top_chunks(conn, query_text: str, top_k: int = 10):
     """
     Encode the query and run pgvector cosine similarity search
     against app.chunks_v.

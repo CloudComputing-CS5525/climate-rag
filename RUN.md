@@ -53,7 +53,7 @@ Edit `.env`. Required variables:
 | `DB_PASSWORD` | Database password |
 | `GEMINI_API_KEY` | LLM for RAG query answering |
 | `BACKEND_URL` | FastAPI base URL used by Streamlit (no trailing slash); use your ALB URL in AWS |
-| `HF_TOKEN` | Optional — HuggingFace token if you hit rate limits streaming [`ccdv/arxiv-summarization`](https://huggingface.co/datasets/ccdv/arxiv-summarization) |
+| `HF_TOKEN` | Optional — HuggingFace token if you hit rate limits streaming [`ShayManor/Labeled-arXiv`](https://huggingface.co/datasets/ShayManor/Labeled-arXiv) during ingestion |
 
 ---
 
@@ -83,14 +83,14 @@ print('Schema ready.')
 
 ## 5. Data ingestion
 
-> **Note:** Takes ~2 hours for 2,000 papers. Run once. Use `--resume` if interrupted.
+> **Note:** Ingesting 3,000 papers can take a long time (HF streaming, embedding, KG). Use `--resume` if interrupted.
 
 ```bash
-# Full run — 2,000 climate papers
-python3 data/ingestion.py --n 2000
+# Full run — 3,000 climate papers
+python3 data/ingestion.py --n 3000
 
 # Resume if interrupted
-python3 data/ingestion.py --n 2000 --resume
+python3 data/ingestion.py --n 3000 --resume
 
 # Quick test run — 20 papers
 python3 data/ingestion.py --n 20

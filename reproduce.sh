@@ -7,7 +7,7 @@
 #   bash reproduce.sh
 #
 # Note: Ingestion is NOT run here — it takes ~2 hours.
-#   Run manually: python3 data/ingestion.py --n 2000
+#   Run manually: python3 data/ingestion.py --n 3000
 #   Optional: set HF_TOKEN in .env for HuggingFace streaming (see .env.example).
 # =============================================================================
 
