@@ -501,10 +501,14 @@ if not st.session_state.messages:
                 <span class="welcome-icon">&#10044;</span>Climate Research Assistant
             </div>
             <div class="welcome-chips">
-                <span class="welcome-chip">What causes ocean acidification?</span>
-                <span class="welcome-chip">Recent trends in Arctic ice loss</span>
-                <span class="welcome-chip">Carbon capture methods</span>
-                <span class="welcome-chip">How do aerosols affect climate?</span>
+                <span class="welcome-chip">How do ocean temperatures affect CO₂ absorption?</span>
+                <span class="welcome-chip">What causes Arctic ice loss?</span>
+                <span class="welcome-chip">How do aerosols influence climate forcing?</span>
+                <span class="welcome-chip">What is the carbon cycle in tropical forests?</span>
+                <span class="welcome-chip">How does deforestation affect albedo?</span>
+                <span class="welcome-chip">What are greenhouse gas feedback mechanisms?</span>
+                <span class="welcome-chip">How does ocean acidification affect marine life?</span>
+                <span class="welcome-chip">What drives sea level rise?</span>
             </div>
         </div>
         """,
@@ -556,17 +560,6 @@ if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     render_chat_message(st.session_state.messages[-1])
 
-    placeholder = st.empty()
-    placeholder.markdown(
-        '''<div style="display:flex;justify-content:flex-start;margin:0.4rem 0;">
-            <div style="background:transparent;padding:0.4rem 0;max-width:100%;
-                        font-family:Inter,sans-serif;">
-                <p style="color:#8C8C89;font-size:1rem;letter-spacing:0.15em;
-                          padding:0.4rem 0;">· · ·</p>
-            </div>
-        </div>''',
-        unsafe_allow_html=True,
-    )
     try:
         payload = {
             "question": prompt,
@@ -574,11 +567,12 @@ if prompt:
             "chat_id": st.session_state.get("chat_id"),
             "chat_history": st.session_state.messages[:-1],
         }
-        res = requests.post(
-            f"{BACKEND_URL}/query", json=payload, timeout=60
-        )
-        res.raise_for_status()
-        data = res.json()
+        with st.spinner("Searching papers and drafting your answer ..."):
+            res = requests.post(
+                f"{BACKEND_URL}/query", json=payload, timeout=60
+            )
+            res.raise_for_status()
+            data = res.json()
 
         if "chat_id" in data:
             st.session_state.chat_id = data["chat_id"]
@@ -603,11 +597,9 @@ if prompt:
 
         fetch_history.clear()
 
-        placeholder.empty()
         render_chat_message(assistant_msg)
 
     except Exception as e:
-        placeholder.empty()
         err_msg = f"Backend error: {e}"
         st.error(err_msg)
         assistant_msg = {"role": "assistant", "content": err_msg}
